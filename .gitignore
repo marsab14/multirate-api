@@ -1,0 +1,18 @@
+.env
+.env.*
+!.env.example
+
+# Compiled binaries
+/bin/
+/tmp/
+billing-api
+*.exe
+
+# Test / coverage output
+*.out
+coverage.*
+
+# Editor / OS junk
+.DS_Store
+.idea/
+.vscode/
