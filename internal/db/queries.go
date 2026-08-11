@@ -91,4 +91,63 @@ const (
 		)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		RETURNING id, created_at, updated_at`
+
+	// QLineGet fetches a single line scoped to (id, document_id).
+	// The document_id predicate is the ownership guard — combined
+	// with an earlier assertEditable on the parent document, this
+	// ensures nobody can PATCH/DELETE another user's line by id.
+	QLineGet = `
+		SELECT id, document_id, position, description, quantity, unit_price,
+		       discount_type, discount_value, tax_percent,
+		       line_subtotal, discount_amount, after_discount,
+		       tax_amount, line_total, created_at, updated_at
+		FROM line_items
+		WHERE id = $1 AND document_id = $2`
+
+	// QLineUpdate rewrites both the input columns and the
+	// server-computed columns for a line. Full replacement (not
+	// COALESCE) because the caller has already merged the incoming
+	// patch with the stored row and recomputed derived values.
+	QLineUpdate = `
+		UPDATE line_items
+		SET description     = $3,
+		    quantity        = $4,
+		    unit_price      = $5,
+		    discount_type   = $6,
+		    discount_value  = $7,
+		    tax_percent     = $8,
+		    position        = $9,
+		    line_subtotal   = $10,
+		    discount_amount = $11,
+		    after_discount  = $12,
+		    tax_amount      = $13,
+		    line_total      = $14
+		WHERE id = $1 AND document_id = $2`
+
+	// QLineDelete removes a single line if it belongs to the given
+	// document. RowsAffected == 0 → 404 LINE_NOT_FOUND at the
+	// handler layer.
+	QLineDelete = `DELETE FROM line_items WHERE id = $1 AND document_id = $2`
+
+	// QLineMaxPosition returns the current maximum position value
+	// for a document's lines, defaulting to 0 for an empty doc.
+	// Used to auto-assign position when a POST /lines request
+	// omits it.
+	QLineMaxPosition = `
+		SELECT COALESCE(MAX(position), 0)
+		FROM line_items
+		WHERE document_id = $1`
+
+	// QLineUpdateComputed rewrites just the derived money columns
+	// for a line. Called during the recompute pass after any line
+	// mutation so all lines stay in sync with pure calc output.
+	// Input columns are untouched.
+	QLineUpdateComputed = `
+		UPDATE line_items
+		SET line_subtotal   = $2,
+		    discount_amount = $3,
+		    after_discount  = $4,
+		    tax_amount      = $5,
+		    line_total      = $6
+		WHERE id = $1`
 )
