@@ -36,6 +36,7 @@ func New(d Deps) *chi.Mux {
 
 	sbClient := auth.NewSupabaseClient(d.Env.SupabaseURL, d.Env.SupabaseAnonKey)
 	authHandlers := handlers.NewAuthHandlers(sbClient)
+	docHandlers := handlers.NewDocumentHandlers(d.DB)
 
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
@@ -62,7 +63,8 @@ func New(d Deps) *chi.Mux {
 
 		r.Group(func(r chi.Router) {
 			r.Use(auth.RequireAuth(d.Env.SupabaseJWTSecret))
-			// B6+: /documents, /documents/{id}/lines, /reports
+			r.Route("/documents", docHandlers.Mount)
+			// B7: /documents/{id}/lines, B9: /reports
 		})
 	})
 

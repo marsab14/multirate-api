@@ -63,6 +63,30 @@ func NewUnauthorized(code, message string) *AppError {
 	}
 }
 
+// NewNotFound constructs a 404-status AppError. The message is a
+// generic "resource not found" — code carries the actual identifier
+// (e.g. DOCUMENT_NOT_FOUND). Ownership checks intentionally return
+// this rather than 403 so the API doesn't leak whether a resource
+// exists for a different user.
+func NewNotFound(code string) *AppError {
+	return &AppError{
+		Code:    code,
+		Message: "resource not found",
+		Status:  http.StatusNotFound,
+	}
+}
+
+// NewConflict constructs a 409-status AppError. Used when a request
+// is well-formed and authorised but conflicts with resource state
+// (e.g. writing to a finalized document).
+func NewConflict(code, message string) *AppError {
+	return &AppError{
+		Code:    code,
+		Message: message,
+		Status:  http.StatusConflict,
+	}
+}
+
 // wire shape for error responses; kept unexported since the wire
 // contract is expressed by the struct tags.
 type errorPayload struct {

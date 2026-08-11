@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"reflect"
 	"strings"
@@ -41,13 +42,16 @@ func newValidator() *validator.Validate {
 }
 
 // decodeJSON parses the request body into v and runs struct-tag
-// validation. On failure it returns an *apperr.AppError already
-// populated with a client-safe code and (where possible) a field
-// path. Handlers are expected to check the returned error and pass
-// it straight to respondError.
+// validation. Unknown JSON fields are rejected up front so typos
+// don't silently succeed. On failure it returns an *apperr.AppError
+// already populated with a client-safe code and (where possible) a
+// field path. Handlers are expected to check the returned error and
+// pass it straight to respondError.
 func decodeJSON(r *http.Request, v any) error {
-	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
-		return apperr.NewBadRequest("INVALID_JSON", "invalid JSON body", "")
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		return apperr.NewBadRequest("INVALID_JSON", err.Error(), "")
 	}
 	if err := validate.Struct(v); err != nil {
 		var ve validator.ValidationErrors
@@ -97,4 +101,30 @@ func respondJSON(w http.ResponseWriter, status int, v any) {
 // would cycle once handlers pull auth.UserFromContext).
 func respondError(w http.ResponseWriter, r *http.Request, err error) {
 	apperr.Respond(w, r, err)
+}
+
+// appHandler is the adapter that lets us write handlers as
+//
+//	func(w, r) error
+//
+// and get consistent error mapping for free. Non-AppError returns
+// (typically DB or transport failures) are logged before being
+// mapped to a generic 500 so we don't leak driver text but still
+// have breadcrumbs in the server log.
+type appHandler func(w http.ResponseWriter, r *http.Request) error
+
+func (fn appHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	err := fn(w, r)
+	if err == nil {
+		return
+	}
+	var ae *apperr.AppError
+	if !errors.As(err, &ae) || ae.Status >= http.StatusInternalServerError {
+		slog.Error("handler error",
+			slog.String("err", err.Error()),
+			slog.String("path", r.URL.Path),
+			slog.String("method", r.Method),
+		)
+	}
+	respondError(w, r, err)
 }
