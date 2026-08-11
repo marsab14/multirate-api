@@ -33,15 +33,17 @@ func NewDocumentHandlers(db *sqlx.DB) *DocumentHandlers {
 	return &DocumentHandlers{db: db}
 }
 
-// Mount registers list/create/get/update/delete on r. Caller mounts
-// r at /api/documents. All handlers use appHandler so they can
-// `return err` and centralised error mapping happens for free.
+// Mount registers list/create/get/update/delete/finalize on r.
+// Caller mounts r at /api/documents. All handlers use appHandler
+// so they can `return err` and centralised error mapping happens
+// for free.
 func (h *DocumentHandlers) Mount(r chi.Router) {
 	r.Method(http.MethodGet, "/", appHandler(h.list))
 	r.Method(http.MethodPost, "/", appHandler(h.create))
 	r.Method(http.MethodGet, "/{id}", appHandler(h.get))
 	r.Method(http.MethodPatch, "/{id}", appHandler(h.update))
 	r.Method(http.MethodDelete, "/{id}", appHandler(h.delete))
+	r.Method(http.MethodPost, "/{id}/finalize", appHandler(h.finalize))
 }
 
 // ------------------------- request/response ----------------------------
@@ -240,6 +242,85 @@ func (h *DocumentHandlers) update(w http.ResponseWriter, r *http.Request) error 
 	updated.Lines = lines
 
 	respondJSON(w, http.StatusOK, documentResponse{Document: &updated})
+	return nil
+}
+
+// finalize locks the document row FOR UPDATE, recomputes totals
+// from stored line inputs (defence in depth — never trust cached
+// derived values), persists the recomputed line values + document
+// totals, flips status to 'finalized', and returns the frozen doc.
+//
+// Concurrency: two overlapping POST /finalize calls end up
+// serialised on the same row lock. The first commits with
+// status='finalized'; the second's SELECT ... FOR UPDATE unblocks
+// after the first commit, sees the new status, and returns 409
+// DOCUMENT_ALREADY_FINALIZED without touching anything else.
+//
+// Empty documents are refused with 400 EMPTY_DOCUMENT: a document
+// with no lines has grand_total=0, which is almost certainly a
+// data-entry mistake rather than intent.
+func (h *DocumentHandlers) finalize(w http.ResponseWriter, r *http.Request) error {
+	user, err := currentUser(r)
+	if err != nil {
+		return err
+	}
+	docID, err := parseDocID(r)
+	if err != nil {
+		return err
+	}
+
+	ctx := r.Context()
+	tx, err := h.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var doc dbpkg.Document
+	if err := sqlx.GetContext(ctx, tx, &doc, dbpkg.QDocumentGetForUpdate, docID, user.ID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return apperr.NewNotFound("DOCUMENT_NOT_FOUND")
+		}
+		return err
+	}
+	if doc.Status == "finalized" {
+		return apperr.NewConflict("DOCUMENT_ALREADY_FINALIZED", "Document is already finalized")
+	}
+
+	lines, err := selectLines(ctx, tx, docID)
+	if err != nil {
+		return err
+	}
+	if len(lines) == 0 {
+		return apperr.NewBadRequest("EMPTY_DOCUMENT", "Cannot finalize a document with no lines", "")
+	}
+
+	inputs := make([]calc.LineInput, len(lines))
+	for i, l := range lines {
+		inputs[i] = lineItemToInput(l)
+	}
+	computed, err := calc.ComputeDocument(inputs)
+	if err != nil {
+		return err
+	}
+
+	if err := persistComputedLines(ctx, tx, lines, computed); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, dbpkg.QDocumentFinalize,
+		docID, computed.Subtotal, computed.TotalDiscount, computed.TotalTax, computed.GrandTotal,
+	); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	fresh, err := getDocWithLines(ctx, h.db, docID, user.ID)
+	if err != nil {
+		return err
+	}
+	respondJSON(w, http.StatusOK, documentResponse{Document: fresh})
 	return nil
 }
 

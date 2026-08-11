@@ -345,7 +345,7 @@ func mergeLineUpdate(existing dbpkg.LineItem, req updateLineRequest) calc.LineIn
 
 // recomputeDocInTx reloads every line for docID, re-runs
 // ComputeDocument, and persists the results back — per-line
-// derived columns via QLineUpdateComputed and the four aggregates
+// derived columns via persistComputedLines and the four aggregates
 // via QDocumentUpdateTotals. Must run inside the same transaction
 // as the mutation that triggered it so the recomputed state and
 // the mutation commit atomically.
@@ -368,6 +368,23 @@ func recomputeDocInTx(ctx context.Context, tx *sqlx.Tx, docID uuid.UUID) error {
 		return err
 	}
 
+	if err := persistComputedLines(ctx, tx, lines, computed); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, dbpkg.QDocumentUpdateTotals,
+		docID, computed.Subtotal, computed.TotalDiscount, computed.TotalTax, computed.GrandTotal,
+	); err != nil {
+		return err
+	}
+	return nil
+}
+
+// persistComputedLines writes the derived money columns for each
+// element of lines using the matching entry in computed.Lines
+// (position-correlated). Callers guarantee len(lines) ==
+// len(computed.Lines) — it is always true after
+// ComputeDocument(inputs) where inputs was built from lines.
+func persistComputedLines(ctx context.Context, tx *sqlx.Tx, lines []dbpkg.LineItem, computed calc.DocumentComputed) error {
 	for i, l := range lines {
 		c := computed.Lines[i]
 		if _, err := tx.ExecContext(ctx, dbpkg.QLineUpdateComputed,
@@ -375,11 +392,6 @@ func recomputeDocInTx(ctx context.Context, tx *sqlx.Tx, docID uuid.UUID) error {
 		); err != nil {
 			return err
 		}
-	}
-	if _, err := tx.ExecContext(ctx, dbpkg.QDocumentUpdateTotals,
-		docID, computed.Subtotal, computed.TotalDiscount, computed.TotalTax, computed.GrandTotal,
-	); err != nil {
-		return err
 	}
 	return nil
 }

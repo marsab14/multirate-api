@@ -29,6 +29,19 @@ const (
 		FROM documents
 		WHERE id = $1 AND user_id = $2`
 
+	// QDocumentGetForUpdate is QDocumentGet plus a row-level lock.
+	// Used by finalize to serialize concurrent finalize attempts:
+	// the first tx to grab the row lock proceeds; a competing tx
+	// blocks on this SELECT and sees status='finalized' once the
+	// first commits, then returns 409 DOCUMENT_ALREADY_FINALIZED.
+	QDocumentGetForUpdate = `
+		SELECT id, user_id, title, customer, issue_date, status,
+		       subtotal, total_discount, total_tax, grand_total,
+		       finalized_at, created_at, updated_at
+		FROM documents
+		WHERE id = $1 AND user_id = $2
+		FOR UPDATE`
+
 	// QLinesForDoc pulls every line belonging to a document, in
 	// display order. Callers should verify document ownership
 	// separately before hitting this — this query is not scoped
@@ -78,6 +91,16 @@ const (
 	QDocumentUpdateTotals = `
 		UPDATE documents
 		SET subtotal = $2, total_discount = $3, total_tax = $4, grand_total = $5
+		WHERE id = $1`
+
+	// QDocumentFinalize writes the aggregate money columns and
+	// atomically flips status to 'finalized' with a wall-clock
+	// finalized_at. Ownership isn't re-checked here — the finalize
+	// handler already selected the row FOR UPDATE by (id, user_id).
+	QDocumentFinalize = `
+		UPDATE documents
+		SET subtotal = $2, total_discount = $3, total_tax = $4, grand_total = $5,
+		    status = 'finalized', finalized_at = NOW()
 		WHERE id = $1`
 
 	// QLineInsert persists a line together with its server-computed
