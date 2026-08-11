@@ -173,4 +173,24 @@ const (
 		    tax_amount      = $5,
 		    line_total      = $6
 		WHERE id = $1`
+
+	// QReportSummary aggregates persisted document totals for the
+	// caller, optionally bounded by $2 (from) / $3 (to). Empty
+	// result is not an error — COUNT returns 0, COALESCE turns the
+	// NULL SUMs into 0. The response layer formats via
+	// .StringFixed(2) so 0 renders as "0.00" for wire consistency.
+	//
+	// Intentionally aggregates document.grand_total (etc.) rather
+	// than re-summing lines: this keeps the numbers identical to
+	// what each individual document's row shows.
+	QReportSummary = `
+		SELECT
+		  COUNT(*)::int                     AS document_count,
+		  COALESCE(SUM(grand_total), 0)     AS total_grand_total,
+		  COALESCE(SUM(total_tax), 0)       AS total_tax,
+		  COALESCE(SUM(total_discount), 0)  AS total_discount
+		FROM documents
+		WHERE user_id = $1
+		  AND ($2::date IS NULL OR issue_date >= $2)
+		  AND ($3::date IS NULL OR issue_date <= $3)`
 )

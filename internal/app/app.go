@@ -38,6 +38,7 @@ func New(d Deps) *chi.Mux {
 	authHandlers := handlers.NewAuthHandlers(sbClient)
 	docHandlers := handlers.NewDocumentHandlers(d.DB)
 	lineHandlers := handlers.NewLineHandlers(d.DB)
+	reportHandlers := handlers.NewReportHandlers(d.DB)
 
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
@@ -68,7 +69,7 @@ func New(d Deps) *chi.Mux {
 				docHandlers.Mount(r)
 				r.Route("/{id}/lines", lineHandlers.Mount)
 			})
-			// B9: /reports
+			r.Route("/reports", reportHandlers.Mount)
 		})
 	})
 
