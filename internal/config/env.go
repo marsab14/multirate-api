@@ -15,7 +15,7 @@ import (
 // populated from an environment variable via struct tags; required
 // fields cause Load to fail fast if unset.
 type Env struct {
-	Port              string `env:"PORT"              envDefault:"4000"`
+	Port              string `env:"PORT"              envDefault:"8080"`
 	DatabaseURL       string `env:"DATABASE_URL,required"`
 	SupabaseURL       string `env:"SUPABASE_URL,required"`
 	SupabaseAnonKey   string `env:"SUPABASE_ANON_KEY,required"`

@@ -1,0 +1,27 @@
+# render.yaml — Render.com blueprint for the billing API.
+#
+# `region` should match the Supabase project region so the pooler hop
+# stays intra-datacentre. Valid Render values: oregon, ohio, virginia,
+# frankfurt, singapore.
+
+services:
+  - type: web
+    name: billing-api
+    env: docker
+    region: virginia
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+      - key: CORS_ORIGIN
+        sync: false
