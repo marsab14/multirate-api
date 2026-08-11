@@ -1,12 +1,15 @@
-// Package handlers contains the HTTP endpoints. Each handler either
-// writes a response directly or delegates to respondError; the
-// appHandler-style return-error adapter is deferred to B10.
+// Package handlers contains the HTTP endpoints. Handlers return
+// errors; the appHandler adapter converts those errors into HTTP
+// responses via respondError — the central classifier that maps
+// AppErrors, sql.ErrNoRows, and pq.Error(23505) to the wire
+// envelope and logs anything else before defaulting to 500.
 //
 // Shared helpers live here: a validator singleton, decodeJSON,
-// respondJSON, respondError.
+// respondJSON, respondError, and the appHandler adapter.
 package handlers
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/go-playground/validator/v10"
+	"github.com/lib/pq"
 
 	"billing-api/internal/apperr"
 )
@@ -94,37 +98,57 @@ func respondJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// respondError writes err as the standard error envelope. Thin
-// wrapper over apperr.Respond so handler code reads with the
-// handlers-package idiom, while auth middleware can call
-// apperr.Respond directly without importing this package (which
-// would cycle once handlers pull auth.UserFromContext).
+// respondError is the central error classifier: it inspects err and
+// writes the appropriate JSON envelope + status. Known shapes
+// (AppError, sql.ErrNoRows, pq unique violation) get their own
+// mapping. Anything else is logged with request context and reduced
+// to a generic 500 so driver-level text never reaches the client.
+//
+// Actual JSON writing is delegated to apperr.Respond so every error
+// path shares one wire encoder — auth middleware calls apperr.Respond
+// directly for the same reason.
 func respondError(w http.ResponseWriter, r *http.Request, err error) {
+	if mapped := classifyError(err); mapped != nil {
+		apperr.Respond(w, r, mapped)
+		return
+	}
+	slog.ErrorContext(r.Context(), "unhandled error",
+		"err", err.Error(),
+		"path", r.URL.Path,
+		"method", r.Method,
+	)
 	apperr.Respond(w, r, err)
 }
 
-// appHandler is the adapter that lets us write handlers as
-//
-//	func(w, r) error
-//
-// and get consistent error mapping for free. Non-AppError returns
-// (typically DB or transport failures) are logged before being
-// mapped to a generic 500 so we don't leak driver text but still
-// have breadcrumbs in the server log.
+// classifyError turns known error shapes into a matching AppError.
+// Returns nil when nothing matches — that's the caller's cue to log
+// and let apperr.Respond default to 500 INTERNAL_ERROR.
+func classifyError(err error) *apperr.AppError {
+	var ae *apperr.AppError
+	if errors.As(err, &ae) {
+		return ae
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return &apperr.AppError{
+			Status:  http.StatusNotFound,
+			Code:    "NOT_FOUND",
+			Message: "Resource not found",
+		}
+	}
+	var pqErr *pq.Error
+	if errors.As(err, &pqErr) && pqErr.Code == "23505" {
+		return apperr.NewConflict("UNIQUE_VIOLATION", "Unique constraint violated")
+	}
+	return nil
+}
+
+// appHandler adapts a `func(w, r) error` handler into http.Handler
+// so we can `return err` from handler bodies and get consistent
+// mapping via respondError.
 type appHandler func(w http.ResponseWriter, r *http.Request) error
 
 func (fn appHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	err := fn(w, r)
-	if err == nil {
-		return
+	if err := fn(w, r); err != nil {
+		respondError(w, r, err)
 	}
-	var ae *apperr.AppError
-	if !errors.As(err, &ae) || ae.Status >= http.StatusInternalServerError {
-		slog.Error("handler error",
-			slog.String("err", err.Error()),
-			slog.String("path", r.URL.Path),
-			slog.String("method", r.Method),
-		)
-	}
-	respondError(w, r, err)
 }
