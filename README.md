@@ -8,12 +8,40 @@ for all money math.
 
 ```bash
 cp .env.example .env      # fill in real values
-go run ./cmd/api          # boots on :4000 by default
+make migrate-up           # apply schema (requires golang-migrate CLI)
+make run                  # boots on :4000 by default
 curl localhost:4000/health
 # => {"ok":true}
 ```
 
 Requires Go 1.25+ and reachable Postgres (Supabase pooler URI works).
+
+### Install the `migrate` CLI
+
+The Makefile's `migrate-*` targets shell out to the
+[`golang-migrate`](https://github.com/golang-migrate/migrate) CLI.
+Install once with either:
+
+```bash
+brew install golang-migrate
+# or
+go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
+```
+
+### Make targets
+
+| Target | Purpose |
+| --- | --- |
+| `make run` | Run the API locally. |
+| `make test` | `go test ./... -race`. |
+| `make tidy` | `go mod tidy`. |
+| `make build` | Compile to `bin/api`. |
+| `make migrate-up` | Apply all pending migrations. |
+| `make migrate-down` | Roll back the most recent migration. |
+| `make migrate-status` | Print the current migration version. |
+
+All `migrate-*` targets read `DATABASE_URL` from `.env` by default; pass
+`DB_URL=…` on the command line to override for one-off runs.
 
 ## Env vars
 
