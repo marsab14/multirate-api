@@ -70,6 +70,30 @@ it against `SUPABASE_JWT_SECRET` (HS256), extracts `sub` and `email`,
 and stashes them in `context.Context` for handlers. User identity
 never comes from the request body.
 
+Error codes returned by the auth endpoints (the frontend switches on
+these):
+
+| Code | Status | Meaning |
+| --- | --- | --- |
+| `EMAIL_TAKEN` | 409 | Signup — address already registered. |
+| `SIGNUP_FAILED` | 400 | Signup — other Supabase error (message forwarded). |
+| `INVALID_CREDENTIALS` | 401 | Login — generic; never leaks whether email exists. |
+| `EMAIL_NOT_CONFIRMED` | 403 | Login — Supabase requires a confirmation click. |
+| `REFRESH_FAILED` | 401 | Refresh — refresh token gone; bounce to `/login`. |
+| `UNAUTHORIZED` / `INVALID_TOKEN` / `TOKEN_EXPIRED` | 401 | Bearer token issues on protected routes. |
+
+### Supabase project setup for the demo
+
+Signup returns `{"session": null, "requires_confirmation": true}`
+whenever Supabase requires an email confirmation click. For the
+demo, disable that in the Supabase dashboard:
+
+> Authentication → Providers → Email → **turn off "Confirm email"**
+
+With confirmation off, `/api/auth/signup` returns a full session
+immediately and the frontend can log the user in without leaving
+the app.
+
 ## Calculation policy
 
 - All money values are `shopspring/decimal.Decimal`. No `float64`

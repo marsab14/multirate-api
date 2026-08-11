@@ -17,6 +17,7 @@ import (
 
 	"billing-api/internal/auth"
 	"billing-api/internal/config"
+	"billing-api/internal/handlers"
 )
 
 // Deps bundles everything a route handler might need. Kept as a
@@ -32,6 +33,9 @@ type Deps struct {
 // every route the app currently exposes. Called once from main.
 func New(d Deps) *chi.Mux {
 	r := chi.NewMux()
+
+	sbClient := auth.NewSupabaseClient(d.Env.SupabaseURL, d.Env.SupabaseAnonKey)
+	authHandlers := handlers.NewAuthHandlers(sbClient)
 
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
@@ -54,9 +58,7 @@ func New(d Deps) *chi.Mux {
 	// chi's r.Group so the middleware wraps only the routes defined
 	// inside the group closure (not the sibling /api/auth subtree).
 	r.Route("/api", func(r chi.Router) {
-		r.Route("/auth", func(r chi.Router) {
-			// B5: signup / login / logout / refresh
-		})
+		r.Route("/auth", authHandlers.Mount)
 
 		r.Group(func(r chi.Router) {
 			r.Use(auth.RequireAuth(d.Env.SupabaseJWTSecret))
