@@ -15,6 +15,7 @@ import (
 	"github.com/go-chi/cors"
 	"github.com/jmoiron/sqlx"
 
+	"billing-api/internal/auth"
 	"billing-api/internal/config"
 )
 
@@ -46,6 +47,22 @@ func New(d Deps) *chi.Mux {
 	r.Use(middleware.SetHeader("Content-Type", "application/json"))
 
 	r.Get("/health", healthHandler)
+
+	// Auth routes are proxies to Supabase and MUST NOT sit behind
+	// RequireAuth — callers hitting /login won't have a token yet.
+	// Everything else under /api is gated behind a token check via
+	// chi's r.Group so the middleware wraps only the routes defined
+	// inside the group closure (not the sibling /api/auth subtree).
+	r.Route("/api", func(r chi.Router) {
+		r.Route("/auth", func(r chi.Router) {
+			// B5: signup / login / logout / refresh
+		})
+
+		r.Group(func(r chi.Router) {
+			r.Use(auth.RequireAuth(d.Env.SupabaseJWTSecret))
+			// B6+: /documents, /documents/{id}/lines, /reports
+		})
+	})
 
 	return r
 }
