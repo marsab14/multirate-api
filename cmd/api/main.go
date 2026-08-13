@@ -1,4 +1,4 @@
-// Command api is the billing service HTTP entrypoint. It loads env
+// Command api is the multirate API HTTP entrypoint. It loads env
 // config, opens the Postgres pool, builds the chi router, and serves
 // on http.Server with sensible timeouts. SIGINT/SIGTERM triggers a
 // graceful shutdown bounded by a 15s deadline.
@@ -14,9 +14,9 @@ import (
 	"syscall"
 	"time"
 
-	"billing-api/internal/app"
-	"billing-api/internal/config"
-	"billing-api/internal/db"
+	"multirate-api/internal/app"
+	"multirate-api/internal/config"
+	"multirate-api/internal/db"
 )
 
 func main() {

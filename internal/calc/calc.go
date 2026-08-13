@@ -13,7 +13,7 @@ import (
 
 	"github.com/shopspring/decimal"
 
-	"billing-api/internal/apperr"
+	"multirate-api/internal/apperr"
 )
 
 // DiscountType is the JSON enum sent by clients. Kept as a named

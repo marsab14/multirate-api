@@ -21,7 +21,7 @@ import (
 	"github.com/go-playground/validator/v10"
 	"github.com/lib/pq"
 
-	"billing-api/internal/apperr"
+	"multirate-api/internal/apperr"
 )
 
 // validate is a package-level go-playground/validator instance.

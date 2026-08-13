@@ -5,7 +5,7 @@
 # Compiled binaries
 /bin/
 /tmp/
-billing-api
+multirate-api
 *.exe
 
 # Test / coverage output

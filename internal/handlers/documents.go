@@ -11,10 +11,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 
-	"billing-api/internal/apperr"
-	"billing-api/internal/auth"
-	"billing-api/internal/calc"
-	dbpkg "billing-api/internal/db"
+	"multirate-api/internal/apperr"
+	"multirate-api/internal/auth"
+	"multirate-api/internal/calc"
+	dbpkg "multirate-api/internal/db"
 )
 
 // dateFormat is the wire format for all date-typed fields. Chosen

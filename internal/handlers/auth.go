@@ -7,8 +7,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"billing-api/internal/apperr"
-	"billing-api/internal/auth"
+	"multirate-api/internal/apperr"
+	"multirate-api/internal/auth"
 )
 
 // SupabaseAuthClient is the narrow interface the auth handlers

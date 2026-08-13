@@ -1,5 +1,5 @@
-This is the backend for a billing/document management take-home,
-written in Go 1.25.
+This is the backend for the multirate pricing / document management
+take-home, written in Go 1.25.
 
 Stack:
 - chi (router) — small, standard-library-flavored

@@ -17,9 +17,9 @@ import (
 	"github.com/go-chi/cors"
 	"github.com/jmoiron/sqlx"
 
-	"billing-api/internal/auth"
-	"billing-api/internal/config"
-	"billing-api/internal/handlers"
+	"multirate-api/internal/auth"
+	"multirate-api/internal/config"
+	"multirate-api/internal/handlers"
 )
 
 // Deps bundles everything a route handler might need. Kept as a

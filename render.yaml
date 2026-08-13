@@ -1,4 +1,4 @@
-# render.yaml — Render.com blueprint for the billing API.
+# render.yaml — Render.com blueprint for the multirate API.
 #
 # `region` should match the Supabase project region so the pooler hop
 # stays intra-datacentre. Valid Render values: oregon, ohio, virginia,
@@ -6,7 +6,7 @@
 
 services:
   - type: web
-    name: billing-api
+    name: multirate-api
     env: docker
     region: virginia
     plan: starter

@@ -11,7 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/require"
 
-	"billing-api/internal/auth"
+	"multirate-api/internal/auth"
 )
 
 // mockSB is a fake SupabaseAuthClient built out of function fields

@@ -24,7 +24,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 
-	"billing-api/internal/apperr"
+	"multirate-api/internal/apperr"
 )
 
 // contextKey is a private named type so that only this package can

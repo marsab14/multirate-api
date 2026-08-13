@@ -8,7 +8,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/shopspring/decimal"
 
-	dbpkg "billing-api/internal/db"
+	dbpkg "multirate-api/internal/db"
 )
 
 // ReportHandlers owns /api/reports/*. Currently that's just the

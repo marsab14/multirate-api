@@ -1,7 +1,7 @@
-# Billing API (Go)
+# Multirate API (Go)
 
-Backend for the billing / document management take-home. Companion
-frontend: `billing-web` (Vite + React).
+Backend for the multirate pricing / document management take-home.
+Companion frontend: `multirate-web` (Vite + React).
 
 ## Stack
 

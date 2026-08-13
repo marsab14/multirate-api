@@ -7,7 +7,7 @@ import (
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
 
-	"billing-api/internal/apperr"
+	"multirate-api/internal/apperr"
 )
 
 func dec(s string) decimal.Decimal            { return decimal.RequireFromString(s) }

@@ -10,7 +10,7 @@ import (
 	"github.com/lib/pq"
 	"github.com/stretchr/testify/require"
 
-	"billing-api/internal/apperr"
+	"multirate-api/internal/apperr"
 )
 
 // TestClassifyError locks the central mapping table: known error

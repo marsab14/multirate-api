@@ -11,9 +11,9 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/shopspring/decimal"
 
-	"billing-api/internal/apperr"
-	"billing-api/internal/calc"
-	dbpkg "billing-api/internal/db"
+	"multirate-api/internal/apperr"
+	"multirate-api/internal/calc"
+	dbpkg "multirate-api/internal/db"
 )
 
 // LineHandlers owns /api/documents/{id}/lines/*. Every mutation is
