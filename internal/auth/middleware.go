@@ -1,13 +1,23 @@
-// Package auth verifies Supabase-issued JWTs (HS256) and exposes the
-// caller identity on request context via UserFromContext. Handlers
-// pull the current user from context rather than trusting anything
-// in the request body.
+// Package auth verifies Supabase-issued JWTs and exposes the caller
+// identity on request context via UserFromContext. Handlers pull
+// the current user from context rather than trusting anything in
+// the request body.
+//
+// Token verification is asymmetric (ES256) against Supabase's
+// public JWKS — the private key never leaves the Supabase Auth
+// service, so a compromise of this backend cannot forge tokens.
+// The JWKS is fetched at boot (see jwks.go) and refreshed by a
+// background goroutine that ends with the server's context.
+//
+// Split of concerns:
+//   - supabase.go   — REST client for signup / login / refresh / logout.
+//   - jwks.go       — bootstrap the keyfunc + expected iss.
+//   - middleware.go — this file; verify a Bearer token per request.
 package auth
 
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 
@@ -23,6 +33,11 @@ import (
 type contextKey string
 
 const userCtxKey contextKey = "user"
+
+// SupabaseAudience is the aud claim Supabase Auth sets on tokens
+// for logged-in users. Anonymous / service tokens carry different
+// audiences we don't accept here.
+const SupabaseAudience = "authenticated"
 
 // User is the small identity subset extracted from a verified JWT.
 // Anything richer (roles, tenant, org) belongs on a separate lookup;
@@ -41,17 +56,28 @@ func UserFromContext(ctx context.Context) (User, bool) {
 	return u, ok
 }
 
-// RequireAuth is a chi-compatible middleware factory. It verifies
-// the Bearer token against jwtSecret (HS256) and rejects with a
-// specific error code so the frontend can decide between "refresh
-// and retry" (TOKEN_EXPIRED) and "bounce to login" (INVALID_TOKEN
-// or UNAUTHORIZED).
+// RequireAuth is a chi-compatible middleware factory. Given a
+// Keyfunc that resolves Supabase's public keys and the expected
+// `iss` claim (both produced by NewSupabaseJWKS), it verifies the
+// Bearer token on each request and puts the caller's identity on
+// context.
 //
-// The middleware calls apperr.Respond directly (not handlers.
+// Rejection codes distinguish "refresh and retry" (TOKEN_EXPIRED)
+// from "bounce to login" (INVALID_TOKEN or UNAUTHORIZED). The
+// middleware calls apperr.Respond directly (not handlers.
 // respondError) to avoid importing package handlers, which imports
 // this package and would cycle.
-func RequireAuth(jwtSecret string) func(http.Handler) http.Handler {
-	secret := []byte(jwtSecret)
+//
+// Algorithm allowlist is ES256 only — Supabase asymmetric keys
+// today. Add RS256 here if a project rotates to RSA keys instead.
+func RequireAuth(kf jwt.Keyfunc, expectedIssuer string) func(http.Handler) http.Handler {
+	parser := jwt.NewParser(
+		jwt.WithValidMethods([]string{"ES256"}),
+		jwt.WithIssuer(expectedIssuer),
+		jwt.WithAudience(SupabaseAudience),
+		jwt.WithExpirationRequired(),
+	)
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			header := r.Header.Get("Authorization")
@@ -61,23 +87,14 @@ func RequireAuth(jwtSecret string) func(http.Handler) http.Handler {
 			}
 			tokenStr := strings.TrimPrefix(header, "Bearer ")
 
-			token, err := jwt.Parse(tokenStr, func(t *jwt.Token) (interface{}, error) {
-				if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-					return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
-				}
-				return secret, nil
-			})
+			var claims jwt.MapClaims
+			token, err := parser.ParseWithClaims(tokenStr, &claims, kf)
 			if err != nil {
-				code := "INVALID_TOKEN"
-				if errors.Is(err, jwt.ErrTokenExpired) {
-					code = "TOKEN_EXPIRED"
-				}
+				code := classifyJWTError(err)
 				apperr.Respond(w, r, apperr.NewUnauthorized(code, "Invalid or expired token"))
 				return
 			}
-
-			claims, ok := token.Claims.(jwt.MapClaims)
-			if !ok || !token.Valid {
+			if !token.Valid {
 				apperr.Respond(w, r, apperr.NewUnauthorized("INVALID_TOKEN", "Invalid token"))
 				return
 			}
@@ -94,4 +111,15 @@ func RequireAuth(jwtSecret string) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+// classifyJWTError picks the wire code the frontend switches on.
+// Only TOKEN_EXPIRED buys a refresh attempt — everything else
+// (signature mismatch, wrong issuer, wrong audience, unknown kid,
+// algorithm rejection) means "bounce to login".
+func classifyJWTError(err error) string {
+	if errors.Is(err, jwt.ErrTokenExpired) {
+		return "TOKEN_EXPIRED"
+	}
+	return "INVALID_TOKEN"
 }

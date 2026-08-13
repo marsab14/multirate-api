@@ -12,18 +12,22 @@ import (
 	"time"
 )
 
-// SupabaseUser is the minimum user shape gotrue returns nested in a
-// session response. We only surface id + email; anything richer
-// (metadata, provider, roles) is out of scope for this proxy.
+// SupabaseUser is the subset of gotrue's user object we surface —
+// id + email is all handlers need. Anything richer (metadata,
+// provider, roles) is intentionally out of scope for this proxy.
 type SupabaseUser struct {
 	ID    string `json:"id"`
 	Email string `json:"email"`
 }
 
 // SupabaseSession mirrors the token bundle gotrue returns from
-// /signup (confirmation off) and /token. ExpiresAt is absolute
-// unix seconds; ExpiresIn is available on the wire but we don't need
-// it downstream — the frontend uses ExpiresAt to schedule refreshes.
+// /signup (when email confirmation is disabled) and /token.
+// ExpiresAt is absolute unix seconds; ExpiresIn is available on the
+// wire but the frontend already has ExpiresAt to schedule refreshes.
+//
+// Under asymmetric JWTs the AccessToken is ES256-signed and
+// verified locally against the JWKS — see NewSupabaseJWKS and the
+// middleware.
 type SupabaseSession struct {
 	AccessToken  string       `json:"access_token"`
 	RefreshToken string       `json:"refresh_token"`
@@ -31,8 +35,8 @@ type SupabaseSession struct {
 	User         SupabaseUser `json:"user"`
 }
 
-// SupabaseError is the error type returned by all SupabaseClient
-// methods on a non-2xx response. Handlers use errors.As to inspect
+// SupabaseError is the error returned by all SupabaseClient methods
+// on a non-2xx response. Handlers use errors.As to inspect
 // Status/Message and map to the appropriate AppError. The upstream
 // error shape stays inside this package — never leaked to clients.
 type SupabaseError struct {
@@ -49,8 +53,13 @@ func (e *SupabaseError) Error() string {
 }
 
 // SupabaseClient is a thin HTTP wrapper around gotrue's /auth/v1/*
-// REST surface. Zero business logic lives here; the handler layer
-// interprets errors and picks HTTP status codes.
+// REST surface for signup / password grant / refresh grant / logout.
+// Zero business logic lives here; the handler layer interprets
+// errors and picks HTTP status codes.
+//
+// Verification of Supabase-issued access tokens does NOT live here.
+// See middleware.go (RequireAuth) and jwks.go (NewSupabaseJWKS) —
+// tokens are verified locally against the project's JWKS.
 type SupabaseClient struct {
 	baseURL string
 	anonKey string
@@ -102,6 +111,9 @@ func (c *SupabaseClient) SignIn(ctx context.Context, email, password string) (*S
 }
 
 // Refresh trades a refresh token for a new session via /token.
+// Note that under asymmetric JWTs the default access-token TTL
+// drops to 5 minutes, so a working /refresh flow becomes materially
+// more important than under legacy 1-hour HS256 tokens.
 func (c *SupabaseClient) Refresh(ctx context.Context, refreshToken string) (*SupabaseSession, error) {
 	var out SupabaseSession
 	if err := c.do(ctx, http.MethodPost, "/token?grant_type=refresh_token", map[string]string{
@@ -173,24 +185,32 @@ func (c *SupabaseClient) do(
 	return nil
 }
 
-// parseSupabaseError normalises the two known gotrue error shapes
-// into a single SupabaseError. Both {"error","error_description"}
-// (OAuth-style) and {"code","msg"} (v1-native) are handled; anything
-// unrecognised falls through to the raw body so the log line still
-// contains something useful.
+// parseSupabaseError normalises gotrue's error shapes into a single
+// SupabaseError. Three known shapes are handled:
+//
+//   - {"error","error_description"}    — OAuth-style (used by /token)
+//   - {"code","msg"}                   — v1-native (used by /signup, /logout)
+//   - {"code","message","details",...} — PostgREST-style (accidental
+//     leakage when SUPABASE_URL is misconfigured; we surface the
+//     message so operators can see PGRST125 etc. in logs)
+//
+// Anything unrecognised falls through to the raw body so the log
+// line still contains something useful.
 func parseSupabaseError(status int, body []byte) error {
 	var s struct {
 		Error            string `json:"error"`
 		ErrorDescription string `json:"error_description"`
 		ErrorCode        string `json:"error_code"`
 		Msg              string `json:"msg"`
+		Message          string `json:"message"`
+		Code             string `json:"code"`
 	}
 	// Ignore decode errors: gotrue occasionally returns text/plain
 	// on infra failures and we still want to surface *something*.
 	_ = json.Unmarshal(body, &s)
 
-	msg := firstNonEmpty(s.ErrorDescription, s.Msg, strings.TrimSpace(string(body)), "supabase request failed")
-	code := firstNonEmpty(s.Error, s.ErrorCode)
+	msg := firstNonEmpty(s.ErrorDescription, s.Msg, s.Message, strings.TrimSpace(string(body)), "supabase request failed")
+	code := firstNonEmpty(s.Error, s.ErrorCode, s.Code)
 
 	return &SupabaseError{Status: status, Code: code, Message: msg}
 }

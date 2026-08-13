@@ -36,11 +36,21 @@ func main() {
 	}
 	defer func() { _ = database.Close() }()
 
-	router := app.New(app.Deps{
+	// The signal context is threaded into app.New so the JWKS
+	// background-refresh goroutine (spawned by keyfunc) shuts down
+	// cleanly on SIGTERM alongside the HTTP server.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	router, err := app.New(ctx, app.Deps{
 		Env:    env,
 		DB:     database,
 		Logger: logger,
 	})
+	if err != nil {
+		logger.Error("failed to build router", slog.String("err", err.Error()))
+		os.Exit(1)
+	}
 
 	srv := &http.Server{
 		Addr:              ":" + env.Port,
@@ -50,9 +60,6 @@ func main() {
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	go func() {
 		logger.Info("server listening", slog.String("addr", srv.Addr), slog.String("env", env.Env))

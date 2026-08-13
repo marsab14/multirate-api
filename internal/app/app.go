@@ -1,10 +1,12 @@
 // Package app assembles the HTTP router: middleware stack, CORS,
-// health probe, and (in later batches) the /api/* routes. It exposes
-// a single New() constructor so main can wire it into an http.Server.
+// health probe, and the /api/* routes. It exposes a single New()
+// constructor so main can wire it into an http.Server.
 package app
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -30,8 +32,22 @@ type Deps struct {
 }
 
 // New builds the chi.Mux with the full middleware stack and mounts
-// every route the app currently exposes. Called once from main.
-func New(d Deps) *chi.Mux {
+// every route the app currently exposes.
+//
+// ctx is passed to the JWKS bootstrap: keyfunc launches a
+// background goroutine that refreshes the JWK Set periodically and
+// on unknown-kid, and that goroutine terminates when ctx does.
+// Callers should hand in a context tied to process lifetime (main
+// uses the signal.NotifyContext ctx).
+//
+// Returns an error when the JWKS endpoint isn't reachable at boot
+// — fail fast is preferable to serving mystery 401s later.
+func New(ctx context.Context, d Deps) (*chi.Mux, error) {
+	jwks, err := auth.NewSupabaseJWKS(ctx, d.Env.SupabaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("bootstrap supabase jwks: %w", err)
+	}
+
 	r := chi.NewMux()
 
 	sbClient := auth.NewSupabaseClient(d.Env.SupabaseURL, d.Env.SupabaseAnonKey)
@@ -57,14 +73,15 @@ func New(d Deps) *chi.Mux {
 
 	// Auth routes are proxies to Supabase and MUST NOT sit behind
 	// RequireAuth — callers hitting /login won't have a token yet.
-	// Everything else under /api is gated behind a token check via
-	// chi's r.Group so the middleware wraps only the routes defined
-	// inside the group closure (not the sibling /api/auth subtree).
+	// Everything else under /api is gated behind an ES256 JWT
+	// verification against the project's JWKS via chi's r.Group
+	// so the middleware wraps only the routes defined inside the
+	// group closure (not the sibling /api/auth subtree).
 	r.Route("/api", func(r chi.Router) {
 		r.Route("/auth", authHandlers.Mount)
 
 		r.Group(func(r chi.Router) {
-			r.Use(auth.RequireAuth(d.Env.SupabaseJWTSecret))
+			r.Use(auth.RequireAuth(jwks.Keyfunc, jwks.ExpectedIssuer))
 			r.Route("/documents", func(r chi.Router) {
 				docHandlers.Mount(r)
 				r.Route("/{id}/lines", lineHandlers.Mount)
@@ -73,7 +90,7 @@ func New(d Deps) *chi.Mux {
 		})
 	})
 
-	return r
+	return r, nil
 }
 
 // healthHandler is intentionally unauthenticated — it exists so

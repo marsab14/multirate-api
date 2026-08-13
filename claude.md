@@ -5,7 +5,8 @@ Stack:
 - chi (router) — small, standard-library-flavored
 - sqlx (DB) — thin layer over database/sql, hand-written SQL for money math
 - shopspring/decimal — decimal arithmetic for money, no floats
-- golang-jwt/jwt/v5 — verify Supabase-issued JWTs (HS256)
+- golang-jwt/jwt/v5 + MicahParks/keyfunc/v3 — verify Supabase-issued
+  JWTs (ES256) against the project's JWKS
 - go-playground/validator/v10 — struct-tag validation on request bodies
 - golang-migrate — SQL file migrations
 
@@ -15,8 +16,16 @@ proxies to Supabase Auth REST endpoints (no Go SDK exists — plain
 net/http calls with the anon key as the `apikey` header).
 
 For every non-auth request, the frontend sends the Supabase-issued
-access token as Bearer. Backend verifies with SUPABASE_JWT_SECRET,
-extracts sub → user.ID and email → user.Email into request context.
+access token as Bearer. Backend verifies asymmetrically against the
+project's JWKS at <SUPABASE_URL>/auth/v1/.well-known/jwks.json:
+- alg allowlist is ES256 only (blocks alg=HS256 downgrade attacks)
+- kid resolved via the keyfunc's cached JWK Set (background refresh)
+- iss must equal <SUPABASE_URL>/auth/v1
+- aud must equal "authenticated"
+- exp required and in the future
+Extracts sub → user.ID and email → user.Email into request context.
+No SUPABASE_JWT_SECRET is consumed anywhere; the shared HS256 secret
+is a legacy path we do not support.
 
 Money handling:
 - shopspring/decimal.Decimal everywhere. Never a float64 near a money value.

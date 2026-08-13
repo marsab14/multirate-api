@@ -12,9 +12,9 @@ import (
 )
 
 // SupabaseAuthClient is the narrow interface the auth handlers
-// depend on. Defined here (at the consumer) so tests can supply an
-// in-memory fake without pulling in net/http. *auth.SupabaseClient
-// satisfies it structurally.
+// depend on. Defined at the consumer (this package) so tests can
+// supply an in-memory fake without pulling in net/http.
+// *auth.SupabaseClient satisfies it structurally.
 type SupabaseAuthClient interface {
 	SignUp(ctx context.Context, email, password string) (*auth.SupabaseSession, error)
 	SignIn(ctx context.Context, email, password string) (*auth.SupabaseSession, error)
@@ -150,6 +150,10 @@ func (h *AuthHandlers) login(w http.ResponseWriter, r *http.Request) {
 // refresh exchanges a refresh_token for a fresh session. Any error
 // collapses to 401 REFRESH_FAILED — the frontend interprets that as
 // "session unrecoverable, bounce to /login".
+//
+// Under asymmetric JWTs Supabase defaults access-token TTL to
+// ~5 minutes (vs 1h under legacy HS256), so this endpoint is on
+// the hot path — cache-affinity for the middleware's JWKS matters.
 func (h *AuthHandlers) refresh(w http.ResponseWriter, r *http.Request) {
 	var req refreshRequest
 	if err := decodeJSON(r, &req); err != nil {

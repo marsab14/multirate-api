@@ -1,6 +1,9 @@
 package auth
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -12,32 +15,63 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const testSecret = "test-secret-please-do-not-use-in-prod"
+// testIssuer is the value the middleware expects on the `iss` claim.
+// Must match what tokens set via signES256's default claims.
+const testIssuer = "https://test.supabase.co/auth/v1"
 
-// signToken produces an HS256 token with the given claims signed
-// with testSecret. Any claim value can be overridden; missing
-// standard claims fall back to sensible defaults so most tests
-// only need to set what they're testing.
-func signToken(t *testing.T, overrides jwt.MapClaims) string {
+// testKey is a package-level P-256 keypair used to sign test tokens
+// and to seed the keyfunc that the middleware verifies against.
+// Generated once in init so every test uses the same "trusted" key.
+var testKey = mustGenerateKey()
+
+// wrongKey is a distinct P-256 keypair. Tokens signed with this
+// simulate "correct algorithm, wrong project" — the middleware
+// must reject them.
+var wrongKey = mustGenerateKey()
+
+func mustGenerateKey() *ecdsa.PrivateKey {
+	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		panic("ecdsa keygen: " + err.Error())
+	}
+	return k
+}
+
+// testKeyfunc resolves ANY kid to testKey's public key. Real
+// Supabase JWKS routes by kid, but for verifying the middleware
+// logic (not the keyfunc library) a static resolver is sufficient
+// and avoids spinning up an httptest JWKS server.
+func testKeyfunc(_ *jwt.Token) (interface{}, error) {
+	return &testKey.PublicKey, nil
+}
+
+// signES256 mints an ES256 JWT with sensible defaults; overrides
+// let each test poke a specific claim (exp, iss, aud, sub, …).
+// signWith lets a test sign with wrongKey to simulate a foreign
+// issuer.
+func signES256(t *testing.T, signWith *ecdsa.PrivateKey, overrides jwt.MapClaims) string {
 	t.Helper()
 	claims := jwt.MapClaims{
 		"sub":   "11111111-1111-1111-1111-111111111111",
 		"email": "user@example.com",
-		"exp":   time.Now().Add(time.Hour).Unix(),
+		"iss":   testIssuer,
+		"aud":   SupabaseAudience,
+		"role":  "authenticated",
 		"iat":   time.Now().Unix(),
+		"exp":   time.Now().Add(time.Hour).Unix(),
 	}
 	for k, v := range overrides {
 		claims[k] = v
 	}
-	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	signed, err := tok.SignedString([]byte(testSecret))
+	tok := jwt.NewWithClaims(jwt.SigningMethodES256, claims)
+	tok.Header["kid"] = "test-key"
+	signed, err := tok.SignedString(signWith)
 	require.NoError(t, err)
 	return signed
 }
 
-// captureUser is a downstream handler that pulls User off ctx and
-// writes it back as JSON so tests can assert the middleware forwarded
-// the right identity.
+// captureUser writes User off ctx as JSON so tests can assert the
+// middleware forwarded the right identity.
 func captureUser(w http.ResponseWriter, r *http.Request) {
 	u, ok := UserFromContext(r.Context())
 	if !ok {
@@ -76,26 +110,44 @@ func TestRequireAuth(t *testing.T) {
 			wantCode:   "INVALID_TOKEN",
 		},
 		{
-			name:       "wrong secret",
-			auth:       "Bearer " + signWithSecret(t, "other-secret"),
+			name:       "signed by different key",
+			auth:       "Bearer " + signES256(t, wrongKey, nil),
 			wantStatus: http.StatusUnauthorized,
 			wantCode:   "INVALID_TOKEN",
 		},
 		{
 			name:       "expired token",
-			auth:       "Bearer " + signToken(t, jwt.MapClaims{"exp": time.Now().Add(-time.Minute).Unix()}),
+			auth:       "Bearer " + signES256(t, testKey, jwt.MapClaims{"exp": time.Now().Add(-time.Minute).Unix()}),
 			wantStatus: http.StatusUnauthorized,
 			wantCode:   "TOKEN_EXPIRED",
 		},
 		{
+			name:       "wrong issuer",
+			auth:       "Bearer " + signES256(t, testKey, jwt.MapClaims{"iss": "https://evil.example.com/auth/v1"}),
+			wantStatus: http.StatusUnauthorized,
+			wantCode:   "INVALID_TOKEN",
+		},
+		{
+			name:       "wrong audience",
+			auth:       "Bearer " + signES256(t, testKey, jwt.MapClaims{"aud": "anon"}),
+			wantStatus: http.StatusUnauthorized,
+			wantCode:   "INVALID_TOKEN",
+		},
+		{
 			name:       "non-UUID subject",
-			auth:       "Bearer " + signToken(t, jwt.MapClaims{"sub": "not-a-uuid"}),
+			auth:       "Bearer " + signES256(t, testKey, jwt.MapClaims{"sub": "not-a-uuid"}),
+			wantStatus: http.StatusUnauthorized,
+			wantCode:   "INVALID_TOKEN",
+		},
+		{
+			name:       "HS256 downgrade attempt is rejected",
+			auth:       "Bearer " + signHS256Downgrade(t),
 			wantStatus: http.StatusUnauthorized,
 			wantCode:   "INVALID_TOKEN",
 		},
 	}
 
-	mw := RequireAuth(testSecret)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mw := RequireAuth(testKeyfunc, testIssuer)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -124,9 +176,9 @@ func TestRequireAuth(t *testing.T) {
 // request with a hydrated User on context.
 func TestRequireAuth_ValidToken(t *testing.T) {
 	id := uuid.MustParse("22222222-2222-2222-2222-222222222222")
-	tok := signToken(t, jwt.MapClaims{"sub": id.String(), "email": "alice@example.com"})
+	tok := signES256(t, testKey, jwt.MapClaims{"sub": id.String(), "email": "alice@example.com"})
 
-	handler := RequireAuth(testSecret)(http.HandlerFunc(captureUser))
+	handler := RequireAuth(testKeyfunc, testIssuer)(http.HandlerFunc(captureUser))
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer "+tok)
 	rec := httptest.NewRecorder()
@@ -139,17 +191,22 @@ func TestRequireAuth_ValidToken(t *testing.T) {
 	require.Equal(t, "alice@example.com", body["email"])
 }
 
-// signWithSecret is a small helper for the "wrong secret" case: it
-// produces a token signed with an arbitrary secret so the middleware
-// (which knows only testSecret) rejects it.
-func signWithSecret(t *testing.T, secret string) string {
+// signHS256Downgrade produces a properly-formed HS256 token. The
+// middleware's algorithm allowlist ("ES256") must reject it — this
+// is the classic alg-substitution attack: an attacker with the JWKS
+// public bytes tries to sign an HS token using those bytes as the
+// HMAC key. jwt.WithValidMethods short-circuits that before the
+// keyfunc is even consulted.
+func signHS256Downgrade(t *testing.T) string {
 	t.Helper()
 	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"sub":   "11111111-1111-1111-1111-111111111111",
 		"email": "user@example.com",
+		"iss":   testIssuer,
+		"aud":   SupabaseAudience,
 		"exp":   time.Now().Add(time.Hour).Unix(),
 	})
-	signed, err := tok.SignedString([]byte(secret))
+	signed, err := tok.SignedString([]byte("any-hmac-key"))
 	require.NoError(t, err)
 	return signed
 }

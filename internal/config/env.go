@@ -14,14 +14,18 @@ import (
 // Env is the fully-parsed process configuration. Every field is
 // populated from an environment variable via struct tags; required
 // fields cause Load to fail fast if unset.
+//
+// Notably absent: SUPABASE_JWT_SECRET. Token verification uses
+// asymmetric ES256 keys published at the project's JWKS endpoint
+// (<SUPABASE_URL>/auth/v1/.well-known/jwks.json) — the shared HS256
+// secret is not consumed anywhere in this process.
 type Env struct {
-	Port              string `env:"PORT"              envDefault:"8080"`
-	DatabaseURL       string `env:"DATABASE_URL,required"`
-	SupabaseURL       string `env:"SUPABASE_URL,required"`
-	SupabaseAnonKey   string `env:"SUPABASE_ANON_KEY,required"`
-	SupabaseJWTSecret string `env:"SUPABASE_JWT_SECRET,required"`
-	CorsOrigin        string `env:"CORS_ORIGIN,required"`
-	Env               string `env:"ENV"               envDefault:"development"`
+	Port            string `env:"PORT"              envDefault:"8080"`
+	DatabaseURL     string `env:"DATABASE_URL,required"`
+	SupabaseURL     string `env:"SUPABASE_URL,required"`
+	SupabaseAnonKey string `env:"SUPABASE_ANON_KEY,required"`
+	CorsOrigin      string `env:"CORS_ORIGIN,required"`
+	Env             string `env:"ENV"               envDefault:"development"`
 }
 
 // Load reads the environment, optionally pre-populated from a local

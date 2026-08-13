@@ -12,8 +12,9 @@ frontend: `billing-web` (Vite + React).
 - [sqlx](https://github.com/jmoiron/sqlx) + hand-written SQL — no ORM
 - [shopspring/decimal](https://github.com/shopspring/decimal) for
   every money value; `NUMERIC(12, 2)` in Postgres
-- [golang-jwt/jwt/v5](https://github.com/golang-jwt/jwt) for Supabase
-  JWT verification (HS256)
+- [golang-jwt/jwt/v5](https://github.com/golang-jwt/jwt) +
+  [MicahParks/keyfunc/v3](https://github.com/MicahParks/keyfunc) for
+  ES256 access-token verification against Supabase's JWKS
 - [go-playground/validator/v10](https://github.com/go-playground/validator)
   for request struct validation
 - Supabase Postgres, Supabase Auth (over REST — no official Go SDK)
@@ -26,15 +27,20 @@ frontend: `billing-web` (Vite + React).
      `go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest`
 2. Copy `.env.example` → `.env` and fill from your Supabase project:
    - `DATABASE_URL` → *Settings → Database → Connection string*
-     (**pooler**, port `6543`)
+     (**pooler**, port `6543`, append `?sslmode=require`)
    - `SUPABASE_URL` → *Settings → API → Project URL*
    - `SUPABASE_ANON_KEY` → *Settings → API → anon public key*
-   - `SUPABASE_JWT_SECRET` → *Settings → API → JWT Settings → JWT Secret*
-3. In *Supabase → Authentication → Providers → Email*, **disable
-   "Confirm email"** for the demo so `POST /api/auth/signup` returns a
-   session immediately instead of a `requires_confirmation: true` stub.
-4. `make migrate-up`
-5. `make run` — server boots on `:4000`. Verify with
+3. **Enable asymmetric JWT signing on the Supabase project.**
+   Dashboard → *Auth → Signing Keys* → migrate to an asymmetric key
+   (ES256). Without this step the JWKS endpoint returns an empty
+   key set and every authenticated request will fail
+   `INVALID_TOKEN`. Rolling back is one click.
+4. In *Supabase → Authentication → Providers → Email*, **disable
+   "Confirm email"** for the demo so `POST /api/auth/signup` returns
+   a session immediately instead of a `requires_confirmation: true`
+   stub.
+5. `make migrate-up`
+6. `make run` — server boots on `:4000`. Verify with
    `curl localhost:4000/health` → `{"ok":true}`.
 
 ## Env vars
@@ -47,10 +53,14 @@ causes the process to exit before it starts listening.
 | `PORT` | no | Defaults to `4000`. |
 | `ENV` | no | `development` or `production`. Default `development`. |
 | `DATABASE_URL` | yes | Postgres DSN (Supabase pooler recommended, port 6543). |
-| `SUPABASE_URL` | yes | Project URL, e.g. `https://xxxx.supabase.co`. |
-| `SUPABASE_ANON_KEY` | yes | Sent as `apikey` when proxying to Supabase Auth. |
-| `SUPABASE_JWT_SECRET` | yes | HS256 secret for verifying user tokens. |
+| `SUPABASE_URL` | yes | Project URL, e.g. `https://xxxx.supabase.co`. Used for auth proxy calls and to derive the JWKS URL. |
+| `SUPABASE_ANON_KEY` | yes | Sent as `apikey` when proxying to Supabase Auth signup/login/refresh/logout. |
 | `CORS_ORIGIN` | yes | Comma-separated allowed browser origins. |
+
+`SUPABASE_JWT_SECRET` is intentionally not read. Verification uses
+the project's public JWKS at
+`<SUPABASE_URL>/auth/v1/.well-known/jwks.json` — ES256 asymmetric.
+The shared HS256 secret is a legacy code path we do not support.
 
 ## Make targets
 
@@ -70,21 +80,38 @@ pass `DB_URL=…` on the command line to override for one-off runs.
 ## Auth architecture
 
 The frontend never talks to Supabase directly — auth is fully
-backend-proxied.
+backend-proxied. Signup/login/refresh/logout are HTTP proxies to
+Supabase's gotrue; access-token verification is asymmetric (ES256)
+against the project's JWKS.
 
 1. Frontend POSTs `/api/auth/signup` or `/api/auth/login`.
 2. Backend calls Supabase Auth REST endpoints with the anon key on
    the `apikey` header (safe server-side; the anon key is a public
    value).
 3. Backend returns `{ "session": { access_token, refresh_token,
-   expires_at, user } }`.
-4. Frontend stores tokens in localStorage and sends `access_token` as
-   `Authorization: Bearer …` on every subsequent request.
-5. Backend verifies the JWT with `SUPABASE_JWT_SECRET` (HS256) on
-   every non-auth request. `sub` becomes `user.ID`, `email` becomes
-   `user.Email` on `context.Context`.
-6. On `401 TOKEN_EXPIRED`, the frontend POSTs `/api/auth/refresh` with
-   the stored `refresh_token` and swaps in the returned session.
+   expires_at, user } }`. The `access_token` is an ES256 JWT signed
+   with the project's private key, which never leaves Supabase.
+4. Frontend stores tokens in localStorage and sends `access_token`
+   as `Authorization: Bearer …` on every subsequent request.
+5. Backend verifies the JWT locally against the JWKS on every
+   non-auth request. The JWK Set is fetched once at boot from
+   `<SUPABASE_URL>/auth/v1/.well-known/jwks.json` and refreshed by
+   a background goroutine. The verifier enforces:
+   - `alg` in `{ES256}` (algorithm allowlist — blocks the classic
+     `alg: HS256` downgrade attack where an attacker signs an HMAC
+     token using the public-key bytes as the HMAC key)
+   - `kid` header resolves to a public key currently in the JWKS
+   - `iss` equals `<SUPABASE_URL>/auth/v1`
+   - `aud` equals `authenticated`
+   - `exp` is present and in the future
+6. `sub` becomes `user.ID` (UUID), `email` becomes `user.Email` on
+   `context.Context`. Handlers pull identity from the context —
+   never from the request body.
+7. On `401 TOKEN_EXPIRED`, the frontend POSTs `/api/auth/refresh`
+   with the stored `refresh_token` and swaps in the returned
+   session. Under asymmetric JWTs Supabase defaults access-token
+   TTL to ~5 minutes (vs 1h under legacy HS256), so `/refresh`
+   is on the hot path.
 
 Auth error codes the frontend switches on:
 
@@ -96,8 +123,18 @@ Auth error codes the frontend switches on:
 | `EMAIL_NOT_CONFIRMED` | 403 | Login — Supabase requires a confirmation click. |
 | `REFRESH_FAILED` | 401 | Refresh — bounce to `/login`. |
 | `UNAUTHORIZED` | 401 | Missing Bearer token. |
-| `INVALID_TOKEN` | 401 | Malformed / wrong-secret / bad subject. |
+| `INVALID_TOKEN` | 401 | Bad signature, wrong `iss`/`aud`, wrong `alg`, unknown `kid`, malformed subject. |
 | `TOKEN_EXPIRED` | 401 | Access token expired — try `/api/auth/refresh`. |
+
+### Why JWKS/ES256 instead of the legacy HS256 secret?
+
+- **Blast radius**: with HS256 anyone holding `SUPABASE_JWT_SECRET`
+  can mint valid tokens. With ES256 the private key lives only in
+  Supabase Auth — a compromise of this backend cannot forge tokens.
+- **Rotation**: Supabase can rotate signing keys with zero
+  redeploys; the JWKS refresh picks up the new `kid` transparently.
+- **Config**: one less secret to distribute (`SUPABASE_JWT_SECRET`
+  is gone from `.env`, `render.yaml`, and every deploy target).
 
 ### Why not the Supabase Go SDK?
 
